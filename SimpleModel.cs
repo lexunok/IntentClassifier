@@ -3,24 +3,21 @@ using TorchSharp.Modules;
 using static TorchSharp.torch;
 using static TorchSharp.torch.nn;
 
-public class SimpleClassifier : Module<Tensor,Tensor>
+public class SimpleClassifier : Module<Tensor, Tensor>
 {
-    private Module<Tensor,Tensor> embedding;
-    private Module<Tensor,Tensor> linear;
+    private readonly Module<Tensor, Tensor> embedding;
+    private readonly Module<Tensor, Tensor> fc;
 
-    public SimpleClassifier(string name, int vocabSize, int embDim, int numLabels) : base(name)
+    public SimpleClassifier(int vocabSize, int embDim, int numLabels) : base(nameof(SimpleClassifier))
     {
         embedding = Embedding(vocabSize, embDim);
-        linear = Linear(embDim, numLabels);
-        RegisterComponents();
+        fc = Linear(embDim, numLabels);
+        RegisterComponents(); // ОБЯЗАТЕЛЬНО
     }
 
     public override Tensor forward(Tensor input)
     {
-        // input: (batch, seq_len) int64
-        var x = embedding.forward(input).to_type(ScalarType.Float32); // (B, L, E)
-        var mean = x.mean([1]); // (B, E)
-        var logits = linear.forward(mean);
-        return logits;
+        var x = embedding.forward(input).mean([1]);
+        return fc.forward(x);
     }
 }

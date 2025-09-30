@@ -15,12 +15,10 @@ class Program
             case "train":
                 Trainer.RunTrain();
                 break;
-            case "export-onnx":
-                OnnxExporter.ExportSimpleModelToOnnx();
-                break;
-            case "infer-onnx":
-                if (args.Length < 2) { Console.WriteLine("Provide text"); return; }
-                InferenceOnnx.Predict(args[1]);
+            case "infer":
+                var predictor = new Predictor("checkpoints/", "tokenizer.json");
+                int intentId = predictor.Predict(args[1]);
+                Console.WriteLine($"Текст: \"{args[1]}\" → intentId: {intentId}");
                 break;
             default:
                 Console.WriteLine("Unknown command");

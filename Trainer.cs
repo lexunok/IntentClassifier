@@ -4,7 +4,7 @@ using System.Linq;
 using TorchSharp;
 using static TorchSharp.torch;
 using static TorchSharp.torch.nn;
-
+using System.Text.Json;
 public static class Trainer
 {
     public static void RunTrain()
@@ -27,7 +27,7 @@ public static class Trainer
         int embDim = 128;
         int numLabels = dataset.Select(d => d.Label).Distinct().Count();
 
-        var model = new SimpleClassifier("simple", vocabSize, embDim, numLabels).to(device);
+        var model = new SimpleClassifier(vocabSize, embDim, numLabels).to(device);
         var opt = optim.Adam(model.parameters(), lr: 1e-3);
         var lossFunc = CrossEntropyLoss();
         
@@ -48,11 +48,22 @@ public static class Trainer
                 step++;
             }
         }
-
+        
         // Сохраняем модельку
         Directory.CreateDirectory("checkpoints");
-        var savePath = "checkpoints/model.pt"; //Мб тут нужен .bin формат
+        var savePath = Path.Combine("checkpoints", "model.pt");
         model.save(savePath);
-        Console.WriteLine($"Saved checkpoint to {savePath}");
+        Console.WriteLine($"✅ Saved checkpoint to {savePath}");
+
+        // Сохраняем конфиг модели рядом с весами
+        var cfg = new {
+            vocabSize,
+            embDim,
+            numLabels,
+            maxLen = 64
+        };
+        var cfgJson = JsonSerializer.Serialize(cfg, new JsonSerializerOptions { WriteIndented = true });
+        File.WriteAllText(Path.Combine("checkpoints", "model_config.json"), cfgJson);
+
     }
 }
