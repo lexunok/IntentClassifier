@@ -3,23 +3,31 @@ using System.IO;
 using System.Text.Json;
 using TorchSharp;
 using static TorchSharp.torch;
+using System.Text.Json.Serialization;
 
 public class ModelConfig
 {
-    public int vocabSize { get; set; }
-    public int embDim { get; set; }
-    public int numLabels { get; set; }
-    public int maxLen { get; set; }
+    [JsonPropertyName("vocabSize")]
+    public int VocabSize { get; set; }
+
+    [JsonPropertyName("embDim")]
+    public int EmbDim { get; set; }
+
+    [JsonPropertyName("numLabels")]
+    public int NumLabels { get; set; }
+
+    [JsonPropertyName("maxLen")]
+    public int MaxLen { get; set; }
 }
 
 public class Predictor
 {
-    private SimpleClassifier model;
-    private TokenizerWrapper tok;
+    private readonly SimpleClassifier model;
+    private readonly TokenizerWrapper tok;
     private readonly Device device;
     private readonly ModelConfig cfg;
 
-    public Predictor(string checkpointsDir, string tokenizerPath = "tokenizer.json")
+    public Predictor(string checkpointsDir = "checkpoints", string tokenizerPath = "tokenizer.json")
     {
         device = cuda.is_available() ? CUDA : CPU;
 
@@ -32,16 +40,14 @@ public class Predictor
 
         // Читаем конфиг
         var cfgJson = File.ReadAllText(cfgPath);
-        cfg = JsonSerializer.Deserialize<ModelConfig>(cfgJson);
-        if (cfg == null) throw new Exception("Failed to deserialize model_config.json");
+        cfg = JsonSerializer.Deserialize<ModelConfig>(
+            cfgJson,
+            new JsonSerializerOptions { PropertyNameCaseInsensitive = true }
+        ) ?? throw new Exception("Failed to deserialize model_config.json");
 
-        // Создаём модель с теми же гиперпараметрами
-        model = new SimpleClassifier(cfg.vocabSize, cfg.embDim, cfg.numLabels);
-        // Важно: RegisterComponents() должен вызываться в конструкторе модели (см. SimpleClassifier)
-        // После этого загружаем веса
+        // Создаём модель
+        model = new SimpleClassifier(cfg.VocabSize, cfg.EmbDim, cfg.NumLabels);
         model.load(modelPath);
-
-        // Переводим на устройство и в eval
         model.to(device);
         model.eval();
 
@@ -51,21 +57,38 @@ public class Predictor
 
     public int Predict(string text)
     {
-        int maxLen = cfg.maxLen > 0 ? cfg.maxLen : 64;
-        var ids = tok.Encode(text, maxLen); // int[] длины maxLen
+        int maxLen = cfg.MaxLen > 0 ? cfg.MaxLen : 64;
 
-        // Формируем 2D массив [1, maxLen]
-        long[,] data = new long[1, ids.Length];
-        for (int i = 0; i < ids.Length; i++) data[0, i] = ids[i];
+        // Обработка пустого текста
+        if (string.IsNullOrWhiteSpace(text))
+            return 0; // либо выбросить исключение, если нужно
 
-        using var inputTensor = torch.tensor(data, dtype: ScalarType.Int64, device: device);
-        using var logits = model.forward(inputTensor); // shape [1, numLabels]
+        var ids = tok.Encode(text, maxLen); // int[]
+        int len = Math.Min(ids.Length, maxLen);
 
-        // argmax по dim=1
+        long[,] inputData = new long[1, maxLen];
+        long[,] maskData = new long[1, maxLen];
+
+        for (int i = 0; i < maxLen; i++)
+        {
+            if (i < len)
+            {
+                inputData[0, i] = ids[i];
+                maskData[0, i] = ids[i] > 0 ? 1 : 0;
+            }
+            else
+            {
+                inputData[0, i] = 0;
+                maskData[0, i] = 0;
+            }
+        }
+
+        using var inputTensor = torch.tensor(inputData, dtype: ScalarType.Int64, device: device);
+        using var maskTensor = torch.tensor(maskData, dtype: ScalarType.Int64, device: device);
+
+        using var logits = model.forward((inputTensor, maskTensor));
         using var predTensor = logits.argmax(1);
-        // Получаем значение (первый элемент)
-        int predicted = predTensor.ToInt32(); // в TorchSharp есть методы ToInt32/ToSingle и т.д.
 
-        return predicted;
+        return predTensor.ToInt32();
     }
 }
