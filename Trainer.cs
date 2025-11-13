@@ -50,12 +50,13 @@ public static class Trainer
 
         Console.WriteLine($"Dataset: total={all.Count}, train={trainSet.Count}, val={valSet.Count}");
 
-        int vocabSize = tok.VocabSize > 0 ? tok.VocabSize : 50000;
+        int vocabSize = tok.VocabSize;
         int embDim = 128;
-        int numLabels = all.Select(d => d.Label).Distinct().Count();
-        Console.WriteLine($"Model params: vocab={vocabSize}, embDim={embDim}, classes={numLabels}");
+        int hiddenSize = 256; // Новый параметр для LSTM
+        int numLabels = all.Count > 0 ? all.Max(d => d.Label) + 1 : 1; // Динамическое определение numLabels
+        Console.WriteLine($"Model params: vocab={vocabSize}, embDim={embDim}, hiddenSize={hiddenSize}, classes={numLabels}");
 
-        var model = new SimpleClassifier(vocabSize, embDim, numLabels).to(device);
+        var model = new SimpleClassifier(vocabSize, embDim, hiddenSize, numLabels).to(device);
         var opt = optim.Adam(model.parameters(), lr: lr);
         var lossFunc = CrossEntropyLoss();
 
@@ -74,7 +75,7 @@ public static class Trainer
         int epochsNoImprove = 0;
 
         // Сохраняем config заранее
-        var cfg = new { vocabSize, embDim, numLabels, maxLen };
+        var cfg = new { vocabSize, embDim, hiddenSize, numLabels, maxLen };
         var cfgJson = JsonSerializer.Serialize(cfg, new JsonSerializerOptions { WriteIndented = true });
         File.WriteAllText(Path.Combine(checkpointsDir, "model_config.json"), cfgJson);
 

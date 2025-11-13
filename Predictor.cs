@@ -12,6 +12,9 @@ public class ModelConfig
 
     [JsonPropertyName("embDim")]
     public int EmbDim { get; set; }
+    
+    [JsonPropertyName("hiddenSize")]
+    public int HiddenSize { get; set; }
 
     [JsonPropertyName("numLabels")]
     public int NumLabels { get; set; }
@@ -46,7 +49,7 @@ public class Predictor
         ) ?? throw new Exception("Failed to deserialize model_config.json");
 
         // Создаём модель
-        model = new SimpleClassifier(cfg.VocabSize, cfg.EmbDim, cfg.NumLabels);
+        model = new SimpleClassifier(cfg.VocabSize, cfg.EmbDim, cfg.HiddenSize, cfg.NumLabels);
         model.load(modelPath);
         model.to(device);
         model.eval();

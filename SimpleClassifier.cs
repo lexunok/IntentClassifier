@@ -3,43 +3,51 @@ using TorchSharp.Modules;
 using static TorchSharp.torch;
 using static TorchSharp.torch.nn;
 
-
 public class SimpleClassifier : Module<(Tensor input, Tensor mask), Tensor>
 {
     private readonly Module<Tensor, Tensor> embedding;
+    private readonly LSTM lstm;
     private readonly Module<Tensor, Tensor> fc1;
     private readonly Module<Tensor, Tensor> fc2;
     private readonly Module<Tensor, Tensor> dropout;
 
-    public SimpleClassifier(int vocabSize, int embDim, int numLabels) : base(nameof(SimpleClassifier))
+    public SimpleClassifier(int vocabSize, int embDim, int hiddenSize, int numLabels) : base(nameof(SimpleClassifier))
     {
         embedding = Embedding(vocabSize, embDim);
-        fc1 = Linear(embDim, 128);
+        lstm = LSTM(embDim, hiddenSize, batchFirst: true, bidirectional: true);
+        // LSTM is bidirectional, so output is 2 * hiddenSize
+        fc1 = Linear(hiddenSize * 2, 128);
         fc2 = Linear(128, numLabels);
-        dropout = Dropout(0.3);
+        dropout = Dropout(0.5);
         RegisterComponents();
     }
 
-    // forward принимает tuple (input, mask)
     public override Tensor forward((Tensor input, Tensor mask) data)
     {
         var (inputIds, mask) = data;
 
-        // embedding
-        var x = embedding.forward(inputIds); // [batch, seq_len, embDim]
+        // embedding: [batch, seq_len] -> [batch, seq_len, embDim]
+        var x = embedding.forward(inputIds);
 
-        // Маскируем паддинги
-        var maskFloat = mask.to_type(ScalarType.Float32).unsqueeze(-1); // [batch, seq_len, 1]
-        x = x * maskFloat;
+        // lstm: [batch, seq_len, embDim] -> [batch, seq_len, 2 * hiddenSize]
+        var (lstmOutput, _, _) = lstm.forward(x);
 
-        // Суммируем по seq_len и делим на количество не паддингов
-        var lengths = maskFloat.sum(1).clamp_min(1.0f); // [batch, 1]
-        x = x.sum(1) / lengths;
+        // We want the output of the last token for each sequence.
+        // We can use the mask to find the length of each sequence.
+        var lengths = mask.sum(1).to(ScalarType.Int64) - 1; // [batch]
+
+        // Index into the lstmOutput to get the last relevant output
+        // lstmOutput is [batch, seq_len, hidden_size * 2]
+        // We need to gather the elements at the specified lengths.
+        // The shape of lengths is [batch], we need to make it [batch, 1, hidden_size * 2]
+        // to use it with gather.
+        var lastTokenIndices = lengths.view(lengths.shape[0], 1, 1).expand(-1, -1, lstmOutput.shape[2]);
+        var lastTokenOutputs = lstmOutput.gather(1, lastTokenIndices).squeeze(1);
 
         // Полносвязные слои
-        x = functional.relu(fc1.forward(x));
-        x = dropout.forward(x);
-        x = fc2.forward(x);
-        return x;
+        var y = functional.relu(fc1.forward(lastTokenOutputs));
+        y = dropout.forward(y);
+        y = fc2.forward(y);
+        return y;
     }
 }
