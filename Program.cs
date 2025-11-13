@@ -17,8 +17,8 @@ class Program
                 break;
             case "infer":
                 var predictor = new Predictor();
-                int intentId = predictor.Predict(args[1]);
-                Console.WriteLine($"Текст: \"{args[1]}\" → intentId: {intentId}");
+                var (intentId, confidence) = predictor.Predict(args[1]);
+                Console.WriteLine($"Текст: \"{args[1]}\" → intentId: {intentId} (Уверенность: {confidence:P2})");
                 break;
             default:
                 Console.WriteLine("Unknown command");

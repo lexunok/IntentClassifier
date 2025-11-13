@@ -8,13 +8,13 @@ using System.Text.Json;
 public static class Trainer
 {
     private const int DEFAULT_MAXLEN = 64;
-    private const int DEFAULT_BATCH = 32;
-    private const int DEFAULT_EPOCHS = 12;
-    private const double DEFAULT_LR = 0.001;
+    private const int DEFAULT_BATCH = 64;
+    private const int DEFAULT_EPOCHS = 20;
+    private const double DEFAULT_LR = 0.0005;
 
-    private const int LR_STEP_SIZE = 4;
+    private const int LR_STEP_SIZE = 5;
     private const double LR_GAMMA = 0.5;
-    private const int EARLY_STOPPING_PATIENCE = 4;
+    private const int EARLY_STOPPING_PATIENCE = 7;
 
     public static void RunTrain(
         string dataPath = "data/train.csv",
@@ -51,12 +51,13 @@ public static class Trainer
         Console.WriteLine($"Dataset: total={all.Count}, train={trainSet.Count}, val={valSet.Count}");
 
         int vocabSize = tok.VocabSize;
-        int embDim = 128;
-        int hiddenSize = 256; // Новый параметр для LSTM
+        int embDim = 256;
+        int hiddenSize = 512;
+        int numLayers = 2;
         int numLabels = all.Count > 0 ? all.Max(d => d.Label) + 1 : 1; // Динамическое определение numLabels
-        Console.WriteLine($"Model params: vocab={vocabSize}, embDim={embDim}, hiddenSize={hiddenSize}, classes={numLabels}");
+        Console.WriteLine($"Model params: vocab={vocabSize}, embDim={embDim}, hiddenSize={hiddenSize}, numLayers={numLayers}, classes={numLabels}");
 
-        var model = new SimpleClassifier(vocabSize, embDim, hiddenSize, numLabels).to(device);
+        var model = new SimpleClassifier(vocabSize, embDim, hiddenSize, numLayers, numLabels).to(device);
         var opt = optim.Adam(model.parameters(), lr: lr);
         var lossFunc = CrossEntropyLoss();
 
@@ -64,8 +65,8 @@ public static class Trainer
         optim.lr_scheduler.LRScheduler? scheduler = null;
         try
         {
-            scheduler = optim.lr_scheduler.StepLR(opt, LR_STEP_SIZE, LR_GAMMA);
-            Console.WriteLine($"Using StepLR scheduler: step={LR_STEP_SIZE}, gamma={LR_GAMMA}");
+            scheduler = optim.lr_scheduler.ReduceLROnPlateau(opt, mode: "min", factor: 0.5, patience: 3, min_lr: new double[] { 1e-6 });
+            Console.WriteLine($"Using ReduceLROnPlateau scheduler: mode=min, factor=0.5, patience=3, min_lr=1e-6");
         }
         catch { scheduler = null; }
 
@@ -75,7 +76,7 @@ public static class Trainer
         int epochsNoImprove = 0;
 
         // Сохраняем config заранее
-        var cfg = new { vocabSize, embDim, hiddenSize, numLabels, maxLen };
+        var cfg = new { vocabSize, embDim, hiddenSize, numLayers, numLabels, maxLen };
         var cfgJson = JsonSerializer.Serialize(cfg, new JsonSerializerOptions { WriteIndented = true });
         File.WriteAllText(Path.Combine(checkpointsDir, "model_config.json"), cfgJson);
 
@@ -118,14 +119,14 @@ public static class Trainer
                 batchIndex++;
             }
 
-            try { scheduler?.step(); } catch { }
-
             double trainLoss = epochLoss / Math.Max(1, epochSamples);
             double trainAcc = 100.0 * epochCorrect / Math.Max(1, epochSamples);
             Console.WriteLine($"=> Train loss: {trainLoss:F4}, Train acc: {trainAcc:F2}%");
 
             var (valLoss, valAcc) = Evaluate(model, valSet, lossFunc, device, batchSize);
             Console.WriteLine($"=> Val   loss: {valLoss:F4}, Val   acc: {valAcc:F2}%");
+            
+            try { scheduler?.step(valLoss); } catch { }
 
             if (valLoss < bestValLoss - 1e-6)
             {
