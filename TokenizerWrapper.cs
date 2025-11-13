@@ -11,7 +11,6 @@ public class TokenizerWrapper
 
     public TokenizerWrapper(string pathOrJson)
     {
-        // load prepared tokenizer.json (HuggingFace Tokenizer fast format)
         tokenizer = new Tokenizer(pathOrJson);
         VocabSize = GetVocabSizeFromJson(pathOrJson);
     }
@@ -28,8 +27,6 @@ public class TokenizerWrapper
                 {
                     if (vocabElement.ValueKind == JsonValueKind.Object)
                     {
-                        // The vocab size is the number of entries in the vocab dictionary.
-                        // Or, to be safer, find the max ID + 1.
                         int maxId = -1;
                         foreach (JsonProperty property in vocabElement.EnumerateObject())
                         {
@@ -46,8 +43,7 @@ public class TokenizerWrapper
                 }
             }
         }
-        // Fallback or throw exception if vocab size can't be determined
-        return 50000; 
+        return 50000;
     }
 
     public uint[] Encode(string text, int maxLen)

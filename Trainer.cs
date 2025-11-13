@@ -5,106 +5,130 @@ using TorchSharp;
 using static TorchSharp.torch;
 using static TorchSharp.torch.nn;
 using System.Text.Json;
-public static class Trainer
+
+/// <summary>
+/// Класс, отвечающий за весь процесс обучения модели.
+/// Он инкапсулирует логику загрузки данных, создания модели, самого обучения и валидации.
+/// </summary>
+public class Trainer
 {
-    private const int DEFAULT_MAXLEN = 64;
-    private const int DEFAULT_BATCH = 64;
-    private const int DEFAULT_EPOCHS = 20;
-    private const double DEFAULT_LR = 0.0005;
+    private readonly TrainingParameters trainingParams;
+    private readonly IntentClassifier model;
+    private readonly torch.Device device;
+    private readonly List<Sample> trainSet;
+    private readonly List<Sample> valSet;
+    private readonly DataLoader dataLoader;
+    private readonly int vocabSize;
+    private readonly int embDim;
+    private readonly int hiddenSize;
+    private readonly int numLayers;
+    private readonly int numLabels;
 
-    private const int LR_STEP_SIZE = 5;
-    private const double LR_GAMMA = 0.5;
-    private const int EARLY_STOPPING_PATIENCE = 7;
-
-    public static void RunTrain(
-        string dataPath = "data/train.csv",
-        string tokenizerPath = "tokenizer.json",
-        string checkpointsDir = "checkpoints",
-        int maxLen = DEFAULT_MAXLEN,
-        int batchSize = DEFAULT_BATCH,
-        int epochs = DEFAULT_EPOCHS,
-        double lr = DEFAULT_LR)
+    /// <summary>
+    /// Конструктор тренера. Выполняет всю подготовительную работу.
+    /// </summary>
+    public Trainer(TrainingParameters trainingParams)
     {
-        Console.WriteLine("Starting training...");
-        var device = cuda.is_available() ? CUDA : CPU;
+        this.trainingParams = trainingParams;
+        this.device = cuda.is_available() ? CUDA : CPU;
         Console.WriteLine($"Device: {device}");
 
-        if (!File.Exists(dataPath))
+        this.dataLoader = new DataLoader();
+
+        // --- Подготовка данных ---
+        if (!File.Exists(trainingParams.DataPath))
         {
-            Console.WriteLine("data/train.csv not found — creating tiny synthetic sample...");
-            Directory.CreateDirectory(Path.GetDirectoryName(dataPath) ?? "data");
-            File.WriteAllLines(dataPath, new[] { "привет,0", "как дела,0", "купить билет,1", "где купить,1" });
+            Console.WriteLine($"{trainingParams.DataPath} not found — creating tiny synthetic sample...");
+            Directory.CreateDirectory(Path.GetDirectoryName(trainingParams.DataPath) ?? "data");
+            File.WriteAllLines(trainingParams.DataPath, new[] { "привет,0", "как дела,0", "купить билет,1", "где купить,1" });
         }
 
-        if (!File.Exists(tokenizerPath)) throw new FileNotFoundException($"Tokenizer not found: {tokenizerPath}");
+        if (!File.Exists(trainingParams.TokenizerPath)) throw new FileNotFoundException($"Tokenizer not found: {trainingParams.TokenizerPath}");
 
-        var tok = new TokenizerWrapper(tokenizerPath);
-        var all = DataLoader.LoadCsv(dataPath, tok, maxLen: maxLen);
+        var tok = new TokenizerWrapper(trainingParams.TokenizerPath);
+        var all = dataLoader.LoadCsv(trainingParams.DataPath, tok, maxLen: trainingParams.MaxLen);
         if (all.Count == 0) throw new Exception("Dataset is empty!");
 
-        var rnd = new Random(42);
-        var shuffled = all.OrderBy(_ => rnd.Next()).ToList();
-        int splitIndex = (int)(shuffled.Count * 0.8);
-        var trainSet = shuffled.Take(splitIndex).ToList();
-        var valSet = shuffled.Skip(splitIndex).ToList();
-
+        // Разделяем все данные на обучающий и валидационный наборы.
+        (this.trainSet, this.valSet) = dataLoader.TrainValSplit(all);
+        
         Console.WriteLine($"Dataset: total={all.Count}, train={trainSet.Count}, val={valSet.Count}");
 
-        int vocabSize = tok.VocabSize;
-        int embDim = 256;
-        int hiddenSize = 512;
-        int numLayers = 2;
-        int numLabels = all.Count > 0 ? all.Max(d => d.Label) + 1 : 1; // Динамическое определение numLabels
+        // --- Определение параметров и создание модели ---
+        this.vocabSize = tok.VocabSize;
+        this.embDim = 256;
+        this.hiddenSize = 512;
+        this.numLayers = 2;
+        this.numLabels = all.Count > 0 ? all.Max(d => d.Label) + 1 : 1;
         Console.WriteLine($"Model params: vocab={vocabSize}, embDim={embDim}, hiddenSize={hiddenSize}, numLayers={numLayers}, classes={numLabels}");
 
-        var model = new SimpleClassifier(vocabSize, embDim, hiddenSize, numLayers, numLabels).to(device);
-        var opt = optim.Adam(model.parameters(), lr: lr);
+        this.model = new IntentClassifier(vocabSize, embDim, hiddenSize, numLayers, numLabels).to(device);
+    }
+
+    /// <summary>
+    /// Основной метод, запускающий цикл обучения.
+    /// </summary>
+    public void Run()
+    {
+        // --- Инициализация компонентов для обучения ---
+
+        // 1. Оптимизатор (Adam). Он будет обновлять веса модели.
+        var opt = optim.Adam(model.parameters(), lr: trainingParams.LearningRate);
+        
+        // 2. Функция потерь (CrossEntropyLoss). Она вычисляет, насколько модель "ошиблась".
         var lossFunc = CrossEntropyLoss();
 
-        // Scheduler
-        optim.lr_scheduler.LRScheduler? scheduler = null;
-        try
-        {
-            scheduler = optim.lr_scheduler.ReduceLROnPlateau(opt, mode: "min", factor: 0.5, patience: 3, min_lr: new double[] { 1e-6 });
-            Console.WriteLine($"Using ReduceLROnPlateau scheduler: mode=min, factor=0.5, patience=3, min_lr=1e-6");
-        }
-        catch { scheduler = null; }
+        // 3. Планировщик скорости обучения. Динамически изменяет learning rate для лучшей сходимости.
+        var scheduler = optim.lr_scheduler.ReduceLROnPlateau(opt, mode: "min", factor: 0.5, patience: 3, min_lr: new double[] { 1e-6 });
+        Console.WriteLine($"Using ReduceLROnPlateau scheduler: mode=min, factor=0.5, patience=3, min_lr=1e-6");
 
-        Directory.CreateDirectory(checkpointsDir);
-        var bestPath = Path.Combine(checkpointsDir, "model.pt");
+        Directory.CreateDirectory(trainingParams.CheckpointsDir);
+        var bestPath = Path.Combine(trainingParams.CheckpointsDir, "model.pt");
         double bestValLoss = double.PositiveInfinity;
         int epochsNoImprove = 0;
 
-        // Сохраняем config заранее
-        var cfg = new { vocabSize, embDim, hiddenSize, numLayers, numLabels, maxLen };
+        // Сохраняем конфигурацию модели. Это нужно для последующего инференса.
+        var cfg = new ModelConfig { VocabSize = vocabSize, EmbDim = embDim, HiddenSize = hiddenSize, NumLayers = numLayers, NumLabels = numLabels, MaxLen = trainingParams.MaxLen };
         var cfgJson = JsonSerializer.Serialize(cfg, new JsonSerializerOptions { WriteIndented = true });
-        File.WriteAllText(Path.Combine(checkpointsDir, "model_config.json"), cfgJson);
+        File.WriteAllText(Path.Combine(trainingParams.CheckpointsDir, "model_config.json"), cfgJson);
 
-        for (int epoch = 1; epoch <= epochs; epoch++)
+        // --- Основной цикл обучения по эпохам ---
+        for (int epoch = 1; epoch <= trainingParams.Epochs; epoch++)
         {
-            Console.WriteLine($"\n=== Epoch {epoch}/{epochs} ===");
-            trainSet = trainSet.OrderBy(_ => rnd.Next()).ToList();
-
+            Console.WriteLine($"\n=== Epoch {epoch}/{trainingParams.Epochs} ===");
+            
+            // Переводим модель в режим обучения.
             model.train();
             double epochLoss = 0.0;
             int epochSamples = 0;
             int epochCorrect = 0;
             int batchIndex = 0;
 
-            foreach (var (inputs, labels) in DataLoader.Batchify(trainSet, batchSize: batchSize, device: device))
+            // --- Цикл по батчам внутри одной эпохи ---
+            foreach (var (inputs, labels) in dataLoader.Batchify(trainSet, batchSize: trainingParams.BatchSize, device: device))
             {
                 var (input, mask) = inputs;
 
+                // --- Ключевой момент обучения (шаг обратного распространения ошибки) ---
+                
+                // 1. Обнуляем градиенты с предыдущего шага.
                 opt.zero_grad();
 
+                // 2. Прогоняем данные через модель (forward pass).
                 using var logits = model.forward((input, mask));
+                
+                // 3. Считаем ошибку (loss).
                 using var loss = lossFunc.forward(logits, labels);
+                
+                // 4. Вычисляем градиенты (как сильно каждый параметр повлиял на ошибку).
                 loss.backward();
 
-                // gradient clipping
+                // (Опционально) Обрезаем градиенты, чтобы избежать их "взрыва" и сделать обучение стабильнее.
                 nn.utils.clip_grad_norm_(model.parameters(), 1.0);
 
+                // 5. Делаем шаг оптимизатора - обновляем веса модели.
                 opt.step();
+                // --- Конец шага обучения ---
 
                 epochLoss += loss.ToSingle() * (int)labels.shape[0];
                 epochSamples += (int)labels.shape[0];
@@ -123,11 +147,14 @@ public static class Trainer
             double trainAcc = 100.0 * epochCorrect / Math.Max(1, epochSamples);
             Console.WriteLine($"=> Train loss: {trainLoss:F4}, Train acc: {trainAcc:F2}%");
 
-            var (valLoss, valAcc) = Evaluate(model, valSet, lossFunc, device, batchSize);
+            // --- Валидация в конце эпохи ---
+            var (valLoss, valAcc) = Evaluate(model, valSet, lossFunc, device, trainingParams.BatchSize);
             Console.WriteLine($"=> Val   loss: {valLoss:F4}, Val   acc: {valAcc:F2}%");
             
-            try { scheduler?.step(valLoss); } catch { }
+            // Шаг планировщика скорости обучения. Он смотрит на valLoss и решает, нужно ли уменьшить learning rate.
+            scheduler.step(valLoss);
 
+            // --- Логика сохранения лучшей модели и ранней остановки ---
             if (valLoss < bestValLoss - 1e-6)
             {
                 bestValLoss = valLoss;
@@ -135,37 +162,43 @@ public static class Trainer
                 model.save(bestPath);
                 Console.WriteLine($"*** New best model (val loss {valLoss:F4}) saved to {bestPath}");
             }
-            else epochsNoImprove++;
-
-            if (epochsNoImprove >= EARLY_STOPPING_PATIENCE)
+            else
             {
-                Console.WriteLine($"Early stopping triggered (no improvement for {EARLY_STOPPING_PATIENCE} epochs).");
+                epochsNoImprove++;
+            }
+
+            if (epochsNoImprove >= trainingParams.EarlyStoppingPatience)
+            {
+                Console.WriteLine($"Early stopping triggered (no improvement for {trainingParams.EarlyStoppingPatience} epochs).");
                 break;
             }
         }
 
-        // final save
-        var finalPath = Path.Combine(checkpointsDir, "model.pt");
-        model.save(finalPath);
+        var finalPath = Path.Combine(trainingParams.CheckpointsDir, "model.pt");
         Console.WriteLine($"Training finished. Last model saved to {finalPath}");
         Console.WriteLine($"Best model saved to {bestPath} (val loss {bestValLoss:F4})");
     }
-
-    private static (double loss, double acc) Evaluate(
-        SimpleClassifier model,
+    
+    /// <summary>
+    /// Метод для оценки производительности модели на заданном наборе данных (обычно валидационном).
+    /// </summary>
+    private (double loss, double acc) Evaluate(
+        IntentClassifier model,
         List<Sample> dataset,
         Loss<Tensor, Tensor, Tensor> lossFunc,
         Device device,
         int batchSize)
     {
+        // Переводим модель в режим оценки. В этом режиме отключаются Dropout и другие слои, специфичные для обучения.
         model.eval();
         double totalLoss = 0.0;
         int totalSamples = 0;
         int totalCorrect = 0;
 
+        // 'no_grad()' отключает вычисление градиентов, что ускоряет процесс и экономит память.
         using (no_grad())
         {
-            foreach (var (inputs, labels) in DataLoader.Batchify(dataset, batchSize: batchSize, device: device))
+            foreach (var (inputs, labels) in dataLoader.Batchify(dataset, batchSize: batchSize, device: device))
             {
                 var (input, mask) = inputs;
 

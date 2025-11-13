@@ -13,7 +13,9 @@ class Program
         switch (cmd)
         {
             case "train":
-                Trainer.RunTrain();
+                var trainingParams = new TrainingParameters();
+                var trainer = new Trainer(trainingParams);
+                trainer.Run();
                 break;
             case "infer":
                 var predictor = new Predictor();
