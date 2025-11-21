@@ -1,60 +1,56 @@
-using System;
-using System.IO;
 using System.Text.Json;
-using System.Linq;
 using Tokenizers.DotNet;
 
-public class TokenizerWrapper
+namespace IntentClassifier
 {
-    private Tokenizer tokenizer;
-    public int VocabSize { get; private set; }
-
-    public TokenizerWrapper(string pathOrJson)
+    public class TokenizerWrapper(string pathOrJson) : IDisposable
     {
-        tokenizer = new Tokenizer(pathOrJson);
-        VocabSize = GetVocabSizeFromJson(pathOrJson);
-    }
+        private readonly Tokenizer _tokenizer = new(pathOrJson);
+        private bool _disposed = false;
+        public int VocabSize { get; private set; } = GetVocabSizeFromJson(pathOrJson);
 
-    private int GetVocabSizeFromJson(string jsonPath)
-    {
-        var jsonString = File.ReadAllText(jsonPath);
-        using (JsonDocument doc = JsonDocument.Parse(jsonString))
+        private static int GetVocabSizeFromJson(string jsonPath)
         {
-            JsonElement root = doc.RootElement;
-            if (root.TryGetProperty("model", out JsonElement modelElement))
+            var jsonString = File.ReadAllText(jsonPath);
+            using JsonDocument doc = JsonDocument.Parse(jsonString);
+
+            if (doc.RootElement.TryGetProperty("model", out JsonElement modelElement) 
+                && modelElement.TryGetProperty("vocab", out JsonElement vocabElement) 
+                && vocabElement.ValueKind == JsonValueKind.Object
+            )
             {
-                if (modelElement.TryGetProperty("vocab", out JsonElement vocabElement))
-                {
-                    if (vocabElement.ValueKind == JsonValueKind.Object)
-                    {
-                        int maxId = -1;
-                        foreach (JsonProperty property in vocabElement.EnumerateObject())
-                        {
-                            if (property.Value.TryGetInt32(out int id))
-                            {
-                                if (id > maxId)
-                                {
-                                    maxId = id;
-                                }
-                            }
-                        }
-                        return maxId + 1;
-                    }
-                }
+                int maxId = -1;
+                foreach (JsonProperty property in vocabElement.EnumerateObject())
+                    if (property.Value.TryGetInt32(out int id) && id > maxId) maxId = id;
+
+                return maxId + 1;
+            }
+
+            return 50000;
+        }
+
+        public uint[] Encode(string text, int maxLen)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+
+            uint[] enc = _tokenizer.Encode(text);
+            if (enc.Length > maxLen)
+            {
+                var arr = new uint[maxLen];
+                Array.Copy(enc, arr, maxLen);
+                return arr;
+            }
+            return enc;
+        }
+
+        public void Dispose()
+        {
+            if (!_disposed)
+            {
+                _tokenizer?.Dispose();
+                _disposed = true;
+                GC.SuppressFinalize(this);
             }
         }
-        return 50000;
-    }
-
-    public uint[] Encode(string text, int maxLen)
-    {
-        var enc = tokenizer.Encode(text);
-        if (enc.Length > maxLen)
-        {
-            var arr = new uint[maxLen];
-            Array.Copy(enc, arr, maxLen);
-            return arr;
-        }
-        return enc;
     }
 }
